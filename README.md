@@ -11,7 +11,7 @@ View the live site at https://live.fpvout.com
 
 # Connecting to goggles
 1. Make sure your goggles are disconnected
-2. Load the webpage http://localhost:9000/
+2. Load the webpage http://localhost:3000/
 3. Connect the goggles
 4. Click "Connect to goggles"
 5. Wait for goggles to Connect
