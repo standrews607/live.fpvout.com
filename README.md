@@ -5,13 +5,13 @@ View your digital FPV in your browser
 View the live site at https://live.fpvout.com
 
 # Installation
-1. `yarn install`
-2. `yarn build`
-3. `yarn serve`
+1. `npm install`
+2. `npm run build`
+3. `npm run start`
 
 # Connecting to goggles
 1. Make sure your goggles are disconnected
-2. Load the webpage https://localhost:9001/
+2. Load the webpage http://localhost:9000/
 3. Connect the goggles
 4. Click "Connect to goggles"
 5. Wait for goggles to Connect
