@@ -24,7 +24,7 @@ export const metadata: Metadata = {
 
 const navigationItems: NavItem[] = [
   {
-    text: "Live FPV View",
+    text: "Goggle Studio",
     icon: <HomeRoundedIcon />,
     href: "/",
   },

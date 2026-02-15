@@ -7,6 +7,7 @@ import { StreamMode, POLLING_PROFILES } from '@/lib/Goggles';
 import H264WebCodecsDecoder from '@/lib/WebCodecsDecoder';
 import PlayerToolbar from './PlayerToolbar';
 import MetricsPanel from './MetricsPanel';
+import useFullscreen from '../hooks/useFullscreen';
 
 type GogglePlayerProps = {
   device: GogglesDevice;
@@ -15,6 +16,7 @@ type GogglePlayerProps = {
 
 export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const playerSurfaceRef = useRef<HTMLDivElement | null>(null);
   const decoderRef = useRef<H264WebCodecsDecoder | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [connectionState, setConnectionState] = useState({
@@ -42,6 +44,12 @@ export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps
     frameCount: 0,
     totalBytes: 0,
   });
+  const {
+    isFullscreen,
+    isSupported: isFullscreenSupported,
+    toggle: toggleFullscreen,
+    exit: exitFullscreen,
+  } = useFullscreen(playerSurfaceRef);
 
   useEffect(() => {
     if (!canvasRef.current) {
@@ -90,6 +98,10 @@ export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps
       decoderRef.current.push(frameData);
       const statsAfter = decoderRef.current.getStats();
       frameDropCountRef.current += statsAfter.droppedFrames - statsBefore.droppedFrames;
+
+      if (statsAfter.decodeErrors !== statsBefore.decodeErrors) {
+        device.updateDecoderErrorCount(statsAfter.decodeErrors);
+      }
 
       if (statsAfter.decodeErrors !== statsBefore.decodeErrors) {
         console.error(`[GogglePlayer] Decoder error detected: ${statsAfter.decodeErrors - statsBefore.decodeErrors} new error(s)`, statsAfter);
@@ -150,6 +162,12 @@ export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps
     };
   }, [device]);
 
+  useEffect(() => {
+    return () => {
+      exitFullscreen();
+    };
+  }, [exitFullscreen]);
+
   const handleModeChange = (e: any) => {
     const mode = e.target.value as StreamMode;
     setSelectedMode(mode);
@@ -158,6 +176,11 @@ export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps
     if (typeof window !== 'undefined') {
       localStorage.setItem('goggleStreamMode', mode);
     }
+  };
+
+  const handleDisconnect = () => {
+    exitFullscreen();
+    onDisconnect();
   };
 
   return (
@@ -190,15 +213,27 @@ export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps
               Polling: {connectionState.currentPollingInterval}ms | Queue: {connectionState.decoderQueueDepth} frames
             </Typography>
             <Box
+              ref={playerSurfaceRef}
+              className="goggle-player-surface"
               sx={{
                 position: 'relative',
                 borderRadius: 2,
                 overflow: 'hidden',
                 bgcolor: 'common.black',
                 minHeight: 480,
+                '&:fullscreen': {
+                  borderRadius: 0,
+                  width: '100vw',
+                  height: '100vh',
+                },
               }}
             >
-              <PlayerToolbar onDisconnect={onDisconnect} />
+              <PlayerToolbar
+                onDisconnect={handleDisconnect}
+                onToggleFullscreen={toggleFullscreen}
+                isFullscreen={isFullscreen}
+                isFullscreenSupported={isFullscreenSupported}
+              />
               <canvas
                 ref={canvasRef}
                 id={playerIdRef.current}

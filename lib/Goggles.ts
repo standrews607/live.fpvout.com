@@ -51,6 +51,7 @@ interface PerformanceMetrics {
   averageFrameSize: number;
   lastFrameTime: number;
   consecutiveErrors: number;
+  decoderErrorCount: number;
 }
 
 export default class Goggles {
@@ -67,6 +68,7 @@ export default class Goggles {
     averageFrameSize: 0,
     lastFrameTime: 0,
     consecutiveErrors: 0,
+    decoderErrorCount: 0,
   };
   private retryDelay: number = 100; // ms, exponential backoff
   private reconnectAttempts: number = 0;
@@ -139,6 +141,10 @@ export default class Goggles {
 
   updateDecoderQueueDepth(depth: number): void {
     this.decoderQueueDepth = depth;
+  }
+
+  updateDecoderErrorCount(errorCount: number): void {
+    this.metrics.decoderErrorCount = errorCount;
   }
 
   private recordFrameArrival(): void {
@@ -345,7 +351,14 @@ export default class Goggles {
   }
 
   getMetrics() {
-    return { ...this.metrics };
+    // Calculate average frame size from tracked frame sizes
+    let avgFrameSize = 0;
+    if (this.frameFrameSizes.length > 0) {
+      avgFrameSize = Math.round(
+        this.frameFrameSizes.reduce((a, b) => a + b, 0) / this.frameFrameSizes.length
+      );
+    }
+    return { ...this.metrics, averageFrameSize: avgFrameSize };
   }
 
   private updateDynamicBufferSize(frameSize: number) {
@@ -450,13 +463,18 @@ export default class Goggles {
           // A frame boundary is detected by consecutive NAL start codes or size threshold
           if (this.activeBufferLen > 200000 || // Larger frames seen in logs
               (this.activeBufferLen > 120000 && frameData.length < 1500)) { // Large chunk followed by small = frame boundary
+            // Capture frame size BEFORE flushing (which zeros out activeBufferLen)
+            const frameSize = this.activeBufferLen;
             this.flushActiveBuffer();
             
             this.metrics.frameCount++;
-            this.metrics.totalBytesReceived += this.activeBufferLen;
+            this.metrics.totalBytesReceived += frameSize; // Use captured frameSize, not activeBufferLen
             this.metrics.lastFrameTime = Date.now();
             this.metrics.consecutiveErrors = 0;
             this.retryDelay = 50;
+            
+            // Update dynamic buffer sizing based on actual frame sizes
+            this.updateDynamicBufferSize(frameSize);
           }
 
           // Update dynamic buffer based on observed frame sizes
