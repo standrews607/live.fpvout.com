@@ -3,6 +3,7 @@ type RenderFrame = (frame: VideoFrame) => void;
 type DecoderOptions = {
   renderFrame: RenderFrame;
   onError?: (error: string) => void;
+  onQueueDepthChange?: (depth: number) => void;
   fps?: number;
   maxDecodeQueue?: number;
   debug?: boolean;
@@ -22,7 +23,7 @@ type DecoderStats = {
 const DEFAULT_FPS = 60;
 const DEFAULT_MAX_DECODE_QUEUE = 20; // Increased for burst absorption
 const DEFAULT_MAX_PENDING_SLICES = 100; // Increased for spike buffering
-const QUEUE_DROP_THRESHOLD = 0.9; // Drop non-IDR when queue > 90%
+const QUEUE_DROP_THRESHOLD = 0.75; // Drop non-IDR when queue > 75% (earlier to prevent accumulation)
 
 function toHex(value: number) {
   return value.toString(16).padStart(2, '0').toUpperCase();
@@ -212,6 +213,7 @@ export default class H264WebCodecsDecoder {
   private decoder: VideoDecoder | null = null;
   private readonly renderFrame: RenderFrame;
   private readonly onError?: (error: string) => void;
+  private readonly onQueueDepthChange?: (depth: number) => void;
   private readonly maxDecodeQueue: number;
   private readonly debug: boolean;
   private sps: Uint8Array | null = null;
@@ -225,6 +227,9 @@ export default class H264WebCodecsDecoder {
   private configPromise: Promise<boolean> | null = null;
   private flushingPending = false;
   private lastQueueWarning = 0;
+  private frameReceiveTime: Map<number, number> = new Map();
+  private latencyHistory: number[] = [];
+  private frameIdCounter = 0;
   private stats: DecoderStats = {
     decodedFrames: 0,
     droppedFrames: 0,
@@ -235,9 +240,10 @@ export default class H264WebCodecsDecoder {
     currentQueueDepth: 0,
   };
 
-  constructor({ renderFrame, onError, fps = DEFAULT_FPS, maxDecodeQueue = DEFAULT_MAX_DECODE_QUEUE, debug = false }: DecoderOptions) {
+  constructor({ renderFrame, onError, onQueueDepthChange, fps = DEFAULT_FPS, maxDecodeQueue = DEFAULT_MAX_DECODE_QUEUE, debug = false }: DecoderOptions) {
     this.renderFrame = renderFrame;
     this.onError = onError;
+    this.onQueueDepthChange = onQueueDepthChange;
     this.maxDecodeQueue = maxDecodeQueue;
     this.debug = debug;
     this.frameDuration = Math.round(1_000_000 / fps);
@@ -253,7 +259,10 @@ export default class H264WebCodecsDecoder {
   }
 
   getStats() {
-    return { ...this.stats };
+    const avgLatency = this.latencyHistory.length > 0
+      ? this.latencyHistory.reduce((a, b) => a + b, 0) / this.latencyHistory.length
+      : 0;
+    return { ...this.stats, avgLatency: avgLatency.toFixed(1) };
   }
 
   destroy() {
@@ -266,11 +275,35 @@ export default class H264WebCodecsDecoder {
   private handleFrame(frame: VideoFrame) {
     this.stats.decodedFrames += 1;
     this.stats.lastFrameTime = Date.now();
+
+    // Record latency for this frame
+    const frameId = this.frameIdCounter - 1;
+    this.recordFrameLatency(frameId);
+
     const renderStart = performance.now();
     this.renderFrame(frame);
     const renderTime = performance.now() - renderStart;
     if (renderTime > 10) {
       console.warn(`[WebCodecs] Slow render: ${renderTime.toFixed(1)}ms`);
+    }
+  }
+
+  private recordFrameLatency(frameId: number): void {
+    const receiveTime = this.frameReceiveTime.get(frameId);
+    if (receiveTime) {
+      const latency = performance.now() - receiveTime;
+      this.latencyHistory.push(latency);
+      if (this.latencyHistory.length > 60) {
+        this.latencyHistory.shift();
+      }
+
+      const avgLatency = this.latencyHistory.reduce((a, b) => a + b, 0) / this.latencyHistory.length;
+      if (avgLatency > 50) {
+        console.warn(
+          `[WebCodecs] High latency detected: ${avgLatency.toFixed(1)}ms avg (${this.latencyHistory.length} samples)`,
+        );
+      }
+      this.frameReceiveTime.delete(frameId);
     }
   }
 
@@ -373,6 +406,11 @@ export default class H264WebCodecsDecoder {
       this.stats.maxQueueDepth = queueSize;
     }
 
+    // Notify about queue depth changes
+    if (this.onQueueDepthChange) {
+      this.onQueueDepthChange(queueSize);
+    }
+
     // Aggressive drop: if queue > 90%, drop all non-IDR frames
     const dropThreshold = this.maxDecodeQueue * QUEUE_DROP_THRESHOLD;
     if (queueSize > dropThreshold && !isIdr) {
@@ -411,6 +449,10 @@ export default class H264WebCodecsDecoder {
       const header = Array.from(data.slice(0, 8)).map((value) => value.toString(16).padStart(2, '0')).join(' ');
       console.log(`[WebCodecs] Received ${data.length}B`, header);
     }
+
+    // Record frame receive time for latency tracking
+    this.frameReceiveTime.set(this.frameIdCounter, performance.now());
+    this.frameIdCounter += 1;
 
     const parseStart = performance.now();
     // Append incrementally instead of full re-concatenation

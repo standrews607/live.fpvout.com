@@ -85,9 +85,9 @@ export const navigationCustomizations: Components<Theme> = {
           borderRadius: (theme.vars || theme).shape.borderRadius,
           borderColor: (theme.vars || theme).palette.divider,
           backgroundColor: (theme.vars || theme).palette.background.paper,
-          boxShadow: `inset 0 1px 0 1px ${alpha((theme.vars || theme).palette.divider, 0.15)}, inset 0 -1px 0 1px hsla(220, 0%, 0%, 0.7)`,
+          boxShadow: `inset 0 1px 0 1px ${alpha(theme.palette.divider, 0.15)}, inset 0 -1px 0 1px hsla(220, 0%, 0%, 0.7)`,
           '&:hover': {
-            borderColor: alpha((theme.vars || theme).palette.divider, 0.7),
+            borderColor: alpha(theme.palette.divider, 0.7),
             backgroundColor: (theme.vars || theme).palette.background.paper,
             boxShadow: 'none',
           },

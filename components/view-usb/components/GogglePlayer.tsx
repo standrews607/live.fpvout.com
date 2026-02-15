@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Box, Card, CardContent, Typography } from '@mui/material';
+import { Box, Card, CardContent, Typography, Select, MenuItem, FormControl, FormLabel, Stack } from '@mui/material';
 import type GogglesDevice from '@/lib/Goggles';
+import { StreamMode, POLLING_PROFILES } from '@/lib/Goggles';
 import H264WebCodecsDecoder from '@/lib/WebCodecsDecoder';
 import PlayerToolbar from './PlayerToolbar';
 import MetricsPanel from './MetricsPanel';
@@ -16,7 +17,21 @@ export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const decoderRef = useRef<H264WebCodecsDecoder | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [connectionState, setConnectionState] = useState({ isReconnecting: false, reconnectAttempts: 0, maxReconnectAttempts: 5 });
+  const [connectionState, setConnectionState] = useState({
+    isReconnecting: false,
+    reconnectAttempts: 0,
+    maxReconnectAttempts: 5,
+    currentMode: StreamMode.Normal60fps_25Mbps,
+    currentPollingInterval: 15,
+    decoderQueueDepth: 0,
+  });
+  const [selectedMode, setSelectedMode] = useState<StreamMode>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('goggleStreamMode') as StreamMode | null;
+      return saved && Object.values(StreamMode).includes(saved) ? saved : StreamMode.Normal60fps_25Mbps;
+    }
+    return StreamMode.Normal60fps_25Mbps;
+  });
   const playerIdRef = useRef(
     `player-${device.serialNumber ?? crypto.randomUUID()}`,
   );
@@ -57,6 +72,10 @@ export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps
       onError: (error) => {
         console.error(`Decoder error: ${error}`);
       },
+      onQueueDepthChange: (depth: number) => {
+        device.updateDecoderQueueDepth(depth);
+        setConnectionState((prev) => ({ ...prev, decoderQueueDepth: depth }));
+      },
       fps: 60,
       debug: true,
     });
@@ -80,6 +99,7 @@ export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps
       if (now - lastMetricsLogRef.current > 5000) {
         lastMetricsLogRef.current = now;
         const metrics = device.getMetrics();
+        const decoderStats = decoderRef.current.getStats();
         const snapshot = lastMetricsSnapshotRef.current;
         const elapsedSec = Math.max(0.001, (now - snapshot.timestamp) / 1000);
         const chunkRate = (metrics.frameCount - snapshot.frameCount) / elapsedSec;
@@ -96,6 +116,7 @@ export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps
           `[GogglePlayer] Video Stats: ${chunkRate.toFixed(2)} chunks/s, ${metrics.frameCount} chunks, ` +
             `Bitrate ${bitrateMbps.toFixed(2)} Mbps, ` +
             `Avg chunk ${metrics.averageFrameSize.toFixed(0)}B, ` +
+            `Avg latency ${decoderStats.avgLatency}ms, ` +
             `Dropped: ${frameDropCountRef.current}, Errors: ${metrics.consecutiveErrors}`,
         );
       }
@@ -113,6 +134,13 @@ export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps
       setConnectionState(state);
     };
 
+    device.onModeChangeCallback = (mode: StreamMode) => {
+      const state = device.getConnectionState();
+      setConnectionState(state);
+      const modeProfile = POLLING_PROFILES[mode];
+      console.log(`[GogglePlayer] Mode changed to: ${modeProfile.description}`);
+    };
+
     device.startPolling();
 
     return () => {
@@ -122,67 +150,100 @@ export default function GogglePlayer({ device, onDisconnect }: GogglePlayerProps
     };
   }, [device]);
 
+  const handleModeChange = (e: any) => {
+    const mode = e.target.value as StreamMode;
+    setSelectedMode(mode);
+    device.setStreamMode(mode);
+    // Persist to localStorage
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('goggleStreamMode', mode);
+    }
+  };
+
   return (
     <>
       <Card variant="outlined">
         <CardContent>
-          <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-            Device {device.serialNumber ?? 'Unknown'}
-          </Typography>
-          <Box
-            sx={{
-              position: 'relative',
-              borderRadius: 2,
-              overflow: 'hidden',
-              bgcolor: 'common.black',
-              minHeight: 480,
-          }}
-        >
-          <PlayerToolbar onDisconnect={onDisconnect} />
-          <canvas
-            ref={canvasRef}
-            id={playerIdRef.current}
-            style={{
-              width: '100%',
-              height: '100%',
-              display: isPlaying ? 'block' : 'none',
-              backgroundColor: 'black',
-            }}
-          />
-          {!isPlaying && (
+          <Stack spacing={2}>
+            <Stack direction="row" spacing={2} alignItems="center" justifyContent="space-between">
+              <Typography variant="subtitle2" color="text.secondary">
+                Device {device.serialNumber ?? 'Unknown'}
+              </Typography>
+              <FormControl size="small" sx={{ minWidth: 200 }}>
+                <FormLabel>
+                  <Typography variant="caption">Operating Mode</Typography>
+                </FormLabel>
+                <Select
+                  value={selectedMode}
+                  onChange={handleModeChange}
+                  size="small"
+                >
+                  {Object.entries(POLLING_PROFILES).map(([mode, profile]) => (
+                    <MenuItem key={mode} value={mode}>
+                      {profile.description} ({(profile.bufferSize / 1024).toFixed(0)}KB)
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Stack>
+            <Typography variant="caption" color="text.secondary">
+              Polling: {connectionState.currentPollingInterval}ms | Queue: {connectionState.decoderQueueDepth} frames
+            </Typography>
             <Box
               sx={{
-                position: 'absolute',
-                inset: 0,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                textAlign: 'center',
-                px: 2,
-                gap: 2,
+                position: 'relative',
+                borderRadius: 2,
+                overflow: 'hidden',
+                bgcolor: 'common.black',
+                minHeight: 480,
               }}
             >
-              {connectionState.isReconnecting ? (
-                <>
-                  <Typography variant="h6" color="warning.main">
-                    Connection Lost - Reconnecting…
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    Attempt {connectionState.reconnectAttempts}/{connectionState.maxReconnectAttempts}
-                  </Typography>
-                </>
-              ) : (
-                <Typography variant="h6" color="text.secondary">
-                  Please power on your drone…
-                </Typography>
+              <PlayerToolbar onDisconnect={onDisconnect} />
+              <canvas
+                ref={canvasRef}
+                id={playerIdRef.current}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  display: isPlaying ? 'block' : 'none',
+                  backgroundColor: 'black',
+                }}
+              />
+              {!isPlaying && (
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    textAlign: 'center',
+                    px: 2,
+                    gap: 2,
+                  }}
+                >
+                  {connectionState.isReconnecting ? (
+                    <>
+                      <Typography variant="h6" color="warning.main">
+                        Connection Lost - Reconnecting…
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Attempt {connectionState.reconnectAttempts}/{connectionState.maxReconnectAttempts}
+                      </Typography>
+                    </>
+                  ) : (
+                    <Typography variant="h6" color="text.secondary">
+                      Please power on your drone…
+                    </Typography>
+                  )}
+                </Box>
               )}
             </Box>
-          )}
-        </Box>
-      </CardContent>
-    </Card>
-    <MetricsPanel device={device} />
+          </Stack>
+        </CardContent>
+      </Card>
+      <MetricsPanel device={device} />
     </>
   );
 }

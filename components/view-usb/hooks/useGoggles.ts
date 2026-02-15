@@ -68,6 +68,19 @@ export default function useGoggles(): UseGogglesResult {
         return;
       }
 
+      // Restore saved operating mode from localStorage
+      if (typeof window !== 'undefined') {
+        const savedMode = localStorage.getItem('goggleStreamMode');
+        if (savedMode) {
+          try {
+            newGoggles.setStreamMode(savedMode as any);
+            console.log(`[useGoggles] Restored operating mode: ${savedMode}`);
+          } catch (err) {
+            console.warn('[useGoggles] Failed to restore operating mode:', err);
+          }
+        }
+      }
+
       console.log('[useGoggles] Video requested successfully, adding to devices');
       setDevices((current) => {
         const serial = newGoggles.serialNumber;
